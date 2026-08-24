@@ -54,6 +54,10 @@ write_manifest = true
 [crop]
 jobs = 16                                 # CPU worker processes; the real bottleneck
 white_out = false                         # false = approach B (tight crop), the default
+cap_jobs_to_memory = true                 # shrink `jobs` when RAM cannot hold that
+                                          # many workers (memory per worker scales
+                                          # with image megapixels; oversubscribing
+                                          # crashes the machine, it does not swap)
 device = ""                               # "" = auto for jobs=1, cpu for jobs>1
 # Partial-spread rescue: a volume shot part-way open yields one-folio crops that
 # drag in the partial facing leaf, come out too wide, and get flagged

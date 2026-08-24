@@ -140,3 +140,13 @@ def test_rescue_narrows_the_quad_with_the_crop():
 def test_rescue_is_off_by_default():
     """It must not change production behaviour until deliberately enabled."""
     assert PipelineConfig().quality.rescue_partial_spread is False
+
+
+def test_channel_distance_matches_linalg_norm_exactly():
+    """The in-place distance must be identical to the expression it replaced."""
+    from folio.stages.foreground import _channel_distance
+    rng = np.random.default_rng(0)
+    lab = (rng.random((120, 90, 3)) * 255).astype(np.float32)
+    bg = np.array([31.0, 128.0, 127.0], np.float32)
+    ref = np.linalg.norm(lab - bg[None, None, :], axis=2)
+    assert np.array_equal(_channel_distance(lab, bg), ref)

@@ -30,6 +30,26 @@ def _largest_components(mask: np.ndarray, min_area_frac: float, top_k: int = 4):
     return out[:top_k]
 
 
+def _channel_distance(lab: np.ndarray, bg: np.ndarray) -> np.ndarray:
+    """Euclidean distance from `bg` per pixel, without full-frame temporaries.
+
+    Equivalent to ``np.linalg.norm(lab - bg[None, None, :], axis=2)`` and verified
+    bit-identical, but that expression materialises FOUR full-frame float32 arrays
+    (the broadcast subtraction, the squaring inside norm, the reduction, plus
+    `lab`). At 16 MP that is ~490 MB for one line; accumulating channel by channel
+    into two reused buffers costs ~120 MB. With one worker per core that
+    difference is measured in tens of gigabytes.
+    """
+    acc = np.zeros(lab.shape[:2], np.float32)
+    tmp = np.empty(lab.shape[:2], np.float32)
+    for i in range(lab.shape[2]):
+        np.subtract(lab[:, :, i], bg[i], out=tmp)
+        np.multiply(tmp, tmp, out=tmp)
+        np.add(acc, tmp, out=acc)
+    np.sqrt(acc, out=acc)
+    return acc
+
+
 def foreground_mask(image: np.ndarray) -> np.ndarray:
     """Binary mask (uint8 0/1) of the paper region, robust to background colour.
 
@@ -48,7 +68,7 @@ def foreground_mask(image: np.ndarray) -> np.ndarray:
         lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3),
     ], axis=0)
     bg = np.median(frame, axis=0)
-    dist = np.linalg.norm(lab - bg[None, None, :], axis=2)
+    dist = _channel_distance(lab, bg)
     dist_n = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     _, fg = cv2.threshold(dist_n, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 

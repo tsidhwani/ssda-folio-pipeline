@@ -311,3 +311,38 @@ def test_example_config_is_loadable():
     for section in ("source", "crops", "coords", "transcripts", "crop", "api"):
         assert section in cfg
     assert cfg["crop"]["rescue_partial_spread"] is False
+
+
+# ------------------------------------------------------------ memory budget
+def test_worker_memory_scales_with_megapixels():
+    small, large = rp.worker_memory_mb(3.0), rp.worker_memory_mb(27.0)
+    assert large > small
+    # anchored to measurements: ~1.9 GB at 16 MP, ~2.3 GB at 27 MP
+    assert 1700 < rp.worker_memory_mb(16.1) < 2100
+    assert 2200 < large < 2500
+
+
+def test_jobs_are_capped_when_ram_is_short():
+    """The crash case: 16 workers x 16 MP images on a 32 GB box."""
+    jobs, note = rp.cap_jobs_for_memory(16, 16.1, available_mb=23 * 1024)
+    assert jobs < 16 and note and "16 ->" in note
+    assert jobs * rp.worker_memory_mb(16.1) <= 23 * 1024
+
+
+def test_jobs_are_untouched_when_ram_is_ample():
+    jobs, note = rp.cap_jobs_for_memory(8, 3.0, available_mb=256 * 1024)
+    assert jobs == 8 and note is None
+
+
+def test_small_images_still_get_full_parallelism():
+    jobs, _n = rp.cap_jobs_for_memory(16, 3.4, available_mb=23 * 1024)
+    assert jobs >= 12, "small images should not be throttled on a 32 GB box"
+
+
+def test_cap_never_returns_zero_workers():
+    jobs, _n = rp.cap_jobs_for_memory(16, 200.0, available_mb=512)
+    assert jobs == 1
+
+
+def test_single_job_is_never_capped():
+    assert rp.cap_jobs_for_memory(1, 99.0, available_mb=64)[0] == 1

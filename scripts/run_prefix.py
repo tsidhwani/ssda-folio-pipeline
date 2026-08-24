@@ -156,6 +156,57 @@ def normalize_prefix(prefix: str, cfg: dict) -> str:
     return prefix
 
 
+# ------------------------------------------------------------- memory budget
+# Measured on this pipeline (folio.process build, CPU workers, synthetic spreads):
+# a worker settles at ~1.2 GB resident once models are loaded and a few large
+# images have passed through, plus a transient peak that scales with megapixels
+# at ~42 MB/MP (680 MB at 16 MP, 1130 MB at 27 MP). One worker per core with
+# 16 MP images therefore needs ~30 GB, which is how a 32 GB box dies.
+WORKER_RESIDENT_MB = 1200.0
+WORKER_MB_PER_MP = 42.0
+MEMORY_SAFETY = 0.8            # leave headroom for the OS and the parent process
+
+
+def worker_memory_mb(megapixels: float) -> float:
+    """Estimated peak RSS of one crop worker on images of this size."""
+    return WORKER_RESIDENT_MB + WORKER_MB_PER_MP * max(megapixels, 0.0)
+
+
+def cap_jobs_for_memory(jobs: int, megapixels: float, available_mb=None) -> tuple:
+    """Reduce `jobs` so the workers fit in RAM. Returns (jobs, note).
+
+    Cropping is CPU-bound, so `jobs` is normally set to the core count — but the
+    memory cost per worker scales with image size, and oversubscribing RAM does
+    not merely slow things down, it takes the machine out.
+    """
+    if jobs <= 1:
+        return jobs, None
+    if available_mb is None:
+        try:
+            import psutil
+            available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        except Exception:
+            return jobs, None          # cannot measure -> respect the config
+    need = worker_memory_mb(megapixels)
+    fits = max(1, int((available_mb * MEMORY_SAFETY) // need))
+    if fits >= jobs:
+        return jobs, None
+    return fits, (f"jobs {jobs} -> {fits}: {megapixels:.1f} MP images need "
+                  f"~{need/1024:.1f} GB/worker, {available_mb/1024:.1f} GB free")
+
+
+def sample_megapixels(s3, bucket, key) -> float:
+    """Decode one source image to learn the volume's working size."""
+    try:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        img = cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return 0.0
+        return img.shape[0] * img.shape[1] / 1e6
+    except Exception:
+        return 0.0
+
+
 def _expected_crop_keys(source_key: str, prefix: str = "") -> set:
     """Every key this source image could plausibly have produced (1- or 2-folio)."""
     return {crop_key(source_key, lbl, prefix) for lbl in ("", "A", "B")}
@@ -363,6 +414,18 @@ def crop_prefix(prefix, cfg, *, resume=True, limit=None, dry_run=False):
     rescue = bool(kc.get("rescue_partial_spread", False))
     if rescue:
         _log(f"{prefix}: partial-spread rescue ENABLED")
+
+    # Size the pool to RAM, not just to cores: memory per worker scales with
+    # megapixels, and oversubscribing it crashes the machine rather than swapping.
+    if jobs > 1 and todo and kc.get("cap_jobs_to_memory", True):
+        mp = sample_megapixels(src, sc["bucket"], todo[0])
+        if mp > 0:
+            jobs, note = cap_jobs_for_memory(jobs, mp)
+            if note:
+                _warn(f"{prefix}: {note}")
+            else:
+                _log(f"{prefix}: {mp:.1f} MP images, {jobs} worker(s) "
+                     f"(~{worker_memory_mb(mp)/1024:.1f} GB each)")
 
     stats = {"images": 0, "skipped": skipped, "errors": 0, "review": 0}
     made = []
