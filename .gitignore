@@ -9,6 +9,13 @@ weights/
 # The documented template is pipeline.example.toml, which IS tracked.
 pipeline.toml
 
+# secrets: API keys, never commit
+.env
+.env.*
+
+# local QA sample pulls (large binaries, not code)
+qa_samples/
+
 # scratch run outputs
 run_*/
 eval_partial_out/
